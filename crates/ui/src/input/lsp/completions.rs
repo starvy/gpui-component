@@ -126,14 +126,18 @@ impl InputState {
         let start = range.end;
         let new_offset = self.cursor();
 
-        if !provider.is_completion_trigger(start, new_text, cx) {
-            return;
-        }
-
         let menu = match self.context_menu_content.as_ref() {
             Some(ContextMenu::Completion(menu)) => Some(menu),
             _ => None,
         };
+
+        // `is_completion_trigger` only decides whether to OPEN a menu. Once one is open, every edit —
+        // including deletions (empty `new_text`), which most providers don't treat as a trigger —
+        // should refresh it, so widening the query with backspace re-broadens the suggestions.
+        let menu_open = menu.is_some_and(|m| m.read(cx).is_open());
+        if !menu_open && !provider.is_completion_trigger(start, new_text, cx) {
+            return;
+        }
 
         // To create or get the existing completion menu.
         let menu = match menu {

@@ -316,10 +316,13 @@ impl RenderOnce for Input {
             .on_action(window.listener_for(&self.state, InputState::right))
             .on_action(window.listener_for(&self.state, InputState::select_left))
             .on_action(window.listener_for(&self.state, InputState::select_right))
+            // Up/Down are registered for single-line inputs too: they route to an open completion
+            // menu first (see `InputState::up`/`down`) and only then no-op on single-line, so arrow
+            // navigation works in single-line autocompletes (e.g. the assertions path field).
+            .on_action(window.listener_for(&self.state, InputState::up))
+            .on_action(window.listener_for(&self.state, InputState::down))
             .when(state.mode.is_multi_line(), |this| {
                 let result = this
-                    .on_action(window.listener_for(&self.state, InputState::up))
-                    .on_action(window.listener_for(&self.state, InputState::down))
                     .on_action(window.listener_for(&self.state, InputState::select_up))
                     .on_action(window.listener_for(&self.state, InputState::select_down))
                     .on_action(window.listener_for(&self.state, InputState::page_up))
