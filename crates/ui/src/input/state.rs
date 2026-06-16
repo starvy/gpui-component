@@ -3098,6 +3098,18 @@ mod tests {
     }
 
     #[gpui::test]
+    fn test_open_search_opens_panel(cx: &mut TestAppContext) {
+        // The harness builds a `code_editor`, which is searchable by default.
+        let view = InputView::new(cx);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        let input = view.input.clone();
+
+        cx.update(|_, cx| assert!(input.read(cx).search_panel.is_none()));
+        cx.update(|window, cx| input.update(cx, |s, cx| s.open_search(window, cx)));
+        cx.update(|_, cx| assert!(input.read(cx).search_panel.is_some()));
+    }
+
+    #[gpui::test]
     fn test_show_completions_opens_menu(cx: &mut TestAppContext) {
         use crate::input::{CompletionProvider, popovers::ContextMenu};
         use lsp_types::{CompletionContext, CompletionItem, CompletionResponse};

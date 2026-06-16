@@ -180,6 +180,13 @@ pub(super) struct SearchPanel {
 }
 
 impl InputState {
+    /// Open the search panel programmatically — equivalent to the `Search` action (cmd-f). No-op
+    /// unless the input is [`searchable`](Self::searchable). Lets a host app expose "find" from its
+    /// own command/menu without depending on focus/dispatch timing.
+    pub fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.on_action_search(&Search, window, cx);
+    }
+
     /// Update the search matcher when text changes.
     pub(super) fn update_search(&mut self, cx: &mut App) {
         let Some(search_panel) = self.search_panel.as_ref() else {
