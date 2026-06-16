@@ -160,6 +160,8 @@ impl InputState {
         }
 
         if self.mode.is_single_line() {
+            // Nothing to move within one line — let a host (e.g. a row grid) use Up to move focus.
+            cx.propagate();
             return;
         }
 
@@ -180,6 +182,8 @@ impl InputState {
         }
 
         if self.mode.is_single_line() {
+            // Nothing to move within one line — let a host (e.g. a row grid) use Down to move focus.
+            cx.propagate();
             return;
         }
 
