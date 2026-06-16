@@ -1451,16 +1451,12 @@ impl InputState {
         let insert_newline = self.mode.is_multi_line() && (!self.submit_on_enter || action.shift);
 
         if insert_newline {
-            // Get current line indent
-            let indent = if self.mode.is_code_editor() {
-                self.indent_of_next_line()
+            if self.mode.is_code_editor() {
+                // Bracket-aware auto-indent (see `insert_newline_with_indent`).
+                self.insert_newline_with_indent(window, cx);
             } else {
-                "".to_string()
-            };
-
-            // Add newline and indent
-            let new_line_text = format!("\n{}", indent);
-            self.replace_text_in_range_silent(None, &new_line_text, window, cx);
+                self.replace_text_in_range_silent(None, "\n", window, cx);
+            }
             self.pause_blink_cursor(cx);
         } else {
             // Single line input or submit-on-enter: just emit the event

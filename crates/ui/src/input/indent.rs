@@ -53,6 +53,71 @@ impl TabSize {
     }
 }
 
+impl InputState {
+    /// Insert a newline at the cursor with bracket-aware auto-indentation (code-editor mode). After
+    /// an opening bracket the new line is indented one level deeper; an empty pair `{|}` (cursor
+    /// between an opener and its matching closer) is split so the closer drops to its own line with
+    /// the cursor on an indented middle line. Otherwise the current line's indentation is carried
+    /// over (the prior behavior).
+    pub(super) fn insert_newline_with_indent(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let cursor = self.cursor();
+        let base = self.current_line_indent();
+        let unit = self.mode.tab_size().to_string();
+        let before = self.char_before_offset(cursor);
+        let after = self.char_after_offset(cursor);
+
+        let is_open = matches!(before, Some('{') | Some('[') | Some('('));
+        let is_pair = matches!(
+            (before, after),
+            (Some('{'), Some('}')) | (Some('['), Some(']')) | (Some('('), Some(')'))
+        );
+
+        if is_pair {
+            let deeper = format!("{base}{unit}");
+            let text = format!("\n{deeper}\n{base}");
+            self.replace_text_in_range_silent(None, &text, window, cx);
+            // Drop the cursor onto the indented middle line.
+            let mid = cursor + 1 + deeper.chars().count();
+            self.selected_range = (mid..mid).into();
+        } else if is_open {
+            let deeper = format!("{base}{unit}");
+            self.replace_text_in_range_silent(None, &format!("\n{deeper}"), window, cx);
+        } else {
+            let indent = self.indent_of_next_line();
+            self.replace_text_in_range_silent(None, &format!("\n{indent}"), window, cx);
+        }
+    }
+
+    /// The leading whitespace of the line containing the cursor.
+    fn current_line_indent(&self) -> String {
+        let start = self.start_of_line();
+        let mut indent = String::new();
+        for c in self.text.slice(start..).chars() {
+            if c == '\n' || c == '\r' || !c.is_whitespace() {
+                break;
+            }
+            indent.push(c);
+        }
+        indent
+    }
+
+    pub(super) fn char_before_offset(&self, offset: usize) -> Option<char> {
+        if offset == 0 {
+            return None;
+        }
+        self.text.slice(offset - 1..offset).chars().next()
+    }
+
+    pub(super) fn char_after_offset(&self, offset: usize) -> Option<char> {
+        // `offset` is the cursor, which never exceeds the text length, so an empty slice → None.
+        self.text.slice(offset..).chars().next()
+    }
+}
+
 impl InputMode {
     #[inline]
     pub(super) fn is_indentable(&self) -> bool {
