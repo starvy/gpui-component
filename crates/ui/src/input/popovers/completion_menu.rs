@@ -281,7 +281,6 @@ impl CompletionMenu {
             return false;
         }
 
-        cx.propagate();
         if input::Enter::is_primary(&*action) {
             self.on_action_enter(window, cx);
         } else if action.partial_eq(&input::Escape) {
@@ -291,9 +290,13 @@ impl CompletionMenu {
         } else if action.partial_eq(&input::MoveDown) {
             self.on_action_down(window, cx);
         } else {
+            // Not a key the menu consumes — let it fall through to the editor.
+            cx.propagate();
             return false;
         }
 
+        // The menu consumed this key (navigate/accept/dismiss); don't also move the text cursor.
+        cx.stop_propagation();
         true
     }
 
