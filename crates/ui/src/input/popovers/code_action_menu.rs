@@ -218,7 +218,7 @@ impl CodeActionMenu {
             return false;
         }
 
-        if input::Enter::is_primary(&*action) {
+        if input::Enter::is_primary(&*action) || action.partial_eq(&input::IndentInline) {
             self.on_action_enter(window, cx);
         } else if action.partial_eq(&input::Escape) {
             self.on_action_escape(window, cx);

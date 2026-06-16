@@ -149,9 +149,17 @@ impl InputState {
             }
         };
 
-        let start_offset = menu.read(cx).trigger_start_offset.unwrap_or(start);
+        let mut start_offset = menu.read(cx).trigger_start_offset.unwrap_or(start);
         if new_offset < start_offset {
-            return;
+            // The cursor moved before the completion's anchor (e.g. backspacing past where the
+            // current word started). If the menu is open, re-anchor at the cursor and re-query so
+            // the suggestions refresh for the new (shorter) context instead of freezing on a stale
+            // list; if it's closed, there's nothing to refresh.
+            if !menu_open {
+                return;
+            }
+            menu.update(cx, |m, _| m.trigger_start_offset = Some(new_offset));
+            start_offset = new_offset;
         }
 
         let query = self

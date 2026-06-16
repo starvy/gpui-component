@@ -296,8 +296,17 @@ impl InputState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // When a completion / code-action menu is open, Tab accepts the selection.
+        if self.handle_action_for_context_menu(Box::new(IndentInline), window, cx) {
+            return;
+        }
         // First, try to accept inline completion if present
         if self.accept_inline_completion(window, cx) {
+            return;
+        }
+        // Single-line inputs don't indent; let Tab fall through to focus navigation.
+        if self.mode.is_single_line() {
+            cx.propagate();
             return;
         }
         self.indent(false, window, cx);
