@@ -1325,6 +1325,11 @@ impl InputState {
     }
 
     pub(super) fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
+        // Delete both halves of an empty auto-pair (`{|}`, `"|"`) in one Backspace.
+        if self.try_delete_pair(window, cx) {
+            self.pause_blink_cursor(cx);
+            return;
+        }
         if self.selected_range.is_empty() {
             self.select_to(self.previous_boundary(self.cursor()), cx)
         }
@@ -2613,6 +2618,16 @@ impl EntityInputHandler for InputState {
             return;
         }
 
+        // Auto-pairing: only for real typed input (not programmatic `silent` inserts — which also
+        // prevents re-entrancy — nor mid-IME-composition).
+        if !self.silent_replace_text
+            && self.ime_marked_range.is_none()
+            && self.try_auto_pair(range_utf16.as_ref(), new_text, window, cx)
+        {
+            self.pause_blink_cursor(cx);
+            return;
+        }
+
         if self.blink_cursor.read(cx).visible() {
             self.pause_blink_cursor(cx);
         }
@@ -2903,6 +2918,131 @@ mod tests {
                 window_handle: window,
             }
         }
+    }
+
+    #[gpui::test]
+    fn test_auto_pair(cx: &mut TestAppContext) {
+        use gpui::EntityInputHandler as _;
+
+        let view = InputView::new(cx);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        let input = view.input.clone();
+
+        macro_rules! type_text {
+            ($t:expr) => {
+                cx.update(|window, cx| {
+                    input.update(cx, |s, cx| {
+                        s.focus(window, cx);
+                        s.replace_text_in_range(None, $t, window, cx);
+                    })
+                });
+            };
+        }
+        macro_rules! assert_state {
+            ($value:expr, $cursor:expr) => {
+                cx.update(|_, cx| {
+                    let s = input.read(cx);
+                    assert_eq!(s.value(), $value);
+                    assert_eq!(s.cursor(), $cursor);
+                });
+            };
+        }
+
+        // Opener auto-closes with the cursor between.
+        type_text!("{");
+        assert_state!("{}", 1);
+
+        // Backspace between an empty pair deletes both halves.
+        cx.update(|window, cx| input.update(cx, |s, cx| s.backspace(&Backspace, window, cx)));
+        assert_state!("", 0);
+
+        // Typing the closer over an auto-inserted one steps past it (no duplicate).
+        type_text!("{");
+        type_text!("}");
+        assert_state!("{}", 2);
+
+        // Quotes auto-close too.
+        cx.update(|window, cx| input.update(cx, |s, cx| s.set_value("", window, cx)));
+        type_text!("\"");
+        assert_state!("\"\"", 1);
+
+        // Typing an opener over a selection wraps it, keeping the inner text selected.
+        cx.update(|window, cx| {
+            input.update(cx, |s, cx| {
+                s.set_value("foo", window, cx);
+                s.selected_range = (0..3).into();
+            })
+        });
+        type_text!("(");
+        cx.update(|_, cx| {
+            let s = input.read(cx);
+            assert_eq!(s.value(), "(foo)");
+            assert_eq!(Range::from(s.selected_range), 1..4);
+        });
+    }
+
+    #[gpui::test]
+    fn test_show_completions_opens_menu(cx: &mut TestAppContext) {
+        use crate::input::{CompletionProvider, popovers::ContextMenu};
+        use lsp_types::{CompletionContext, CompletionItem, CompletionResponse};
+        use std::rc::Rc;
+
+        struct TestProvider;
+        impl CompletionProvider for TestProvider {
+            fn completions(
+                &self,
+                _: &crate::input::Rope,
+                _: usize,
+                _: CompletionContext,
+                _: &mut Window,
+                _: &mut Context<InputState>,
+            ) -> gpui::Task<anyhow::Result<CompletionResponse>> {
+                gpui::Task::ready(Ok(CompletionResponse::Array(vec![CompletionItem {
+                    label: "hello".into(),
+                    ..Default::default()
+                }])))
+            }
+
+            fn is_completion_trigger(
+                &self,
+                _: usize,
+                _: &str,
+                _: &mut Context<InputState>,
+            ) -> bool {
+                true
+            }
+        }
+
+        let input_view = InputView::new(cx);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.lsp.completion_provider = Some(Rc::new(TestProvider));
+                state.set_value("foo", window, cx);
+                state.focus(window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        // Trigger the same path `ctrl-space` uses.
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.show_completions(&ShowCompletion, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        // The menu must be created and shown.
+        let (created, open) = cx.update(|_, cx| {
+            input.read_with(cx, |state, cx| match &state.context_menu_content {
+                Some(ContextMenu::Completion(m)) => (true, m.read(cx).is_open()),
+                _ => (false, false),
+            })
+        });
+        assert!(created, "show_completions should create a completion menu");
+        assert!(open, "show_completions should open the completion menu");
     }
 
     #[gpui::test]

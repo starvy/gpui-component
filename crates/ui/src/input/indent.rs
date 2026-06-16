@@ -149,6 +149,15 @@ impl InputMode {
             _ => TabSize::default(),
         }
     }
+
+    /// The code editor's language name, if this is a code editor.
+    #[inline]
+    pub(super) fn language(&self) -> Option<&str> {
+        match self {
+            InputMode::CodeEditor { language, .. } => Some(language.as_ref()),
+            _ => None,
+        }
+    }
 }
 
 impl TextElement {
