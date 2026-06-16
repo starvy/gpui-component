@@ -368,6 +368,11 @@ pub struct InputState {
     pub(super) selecting: bool,
     pub(super) size: Size,
     pub(super) disabled: bool,
+    /// When true, the user cannot mutate the text (typing, paste, cut, delete, auto-pair, undo/redo
+    /// are all no-ops), but unlike [`Self::disabled`] the input keeps its normal appearance and
+    /// stays focusable, selectable, copyable, scrollable, and searchable. Programmatic setters
+    /// ([`Self::set_value`], [`Self::insert`], [`Self::replace`]) bypass it. Intended for viewers.
+    pub(super) read_only: bool,
     pub(super) masked: bool,
     pub(super) clean_on_escape: bool,
     pub(super) submit_on_enter: bool,
@@ -487,6 +492,7 @@ impl InputState {
             input_bounds: Bounds::default(),
             selecting: false,
             disabled: false,
+            read_only: false,
             masked: false,
             clean_on_escape: false,
             submit_on_enter: false,
@@ -804,12 +810,15 @@ impl InputState {
         cx: &mut Context<Self>,
     ) {
         let was_disabled = self.disabled;
+        let was_read_only = self.read_only;
         self.disabled = false;
+        self.read_only = false;
         let text: SharedString = text.into();
         let range_utf16 = self.range_to_utf16(&(self.cursor()..self.cursor()));
         self.replace_text_in_range_silent(Some(range_utf16), &text, window, cx);
         self.selected_range = (self.selected_range.end..self.selected_range.end).into();
         self.disabled = was_disabled;
+        self.read_only = was_read_only;
     }
 
     /// Replace text at the current cursor position.
@@ -822,11 +831,14 @@ impl InputState {
         cx: &mut Context<Self>,
     ) {
         let was_disabled = self.disabled;
+        let was_read_only = self.read_only;
         self.disabled = false;
+        self.read_only = false;
         let text: SharedString = text.into();
         self.replace_text_in_range_silent(None, &text, window, cx);
         self.selected_range = (self.selected_range.end..self.selected_range.end).into();
         self.disabled = was_disabled;
+        self.read_only = was_read_only;
     }
 
     fn replace_text(
@@ -836,12 +848,15 @@ impl InputState {
         cx: &mut Context<Self>,
     ) {
         let was_disabled = self.disabled;
+        let was_read_only = self.read_only;
         self.disabled = false;
+        self.read_only = false;
         let text: SharedString = text.into();
         let range = 0..self.text.chars().map(|c| c.len_utf16()).sum();
         self.replace_text_in_range_silent(Some(range), &text, window, cx);
         self.reset_highlighter(cx);
         self.disabled = was_disabled;
+        self.read_only = was_read_only;
     }
 
     /// Set with disabled mode.
@@ -851,6 +866,30 @@ impl InputState {
     pub(crate) fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
+    }
+
+    /// Build a read-only input.
+    ///
+    /// Unlike [`Self::disabled`], a read-only input keeps its normal appearance and remains
+    /// focusable, selectable, copyable, scrollable, and searchable — only user text mutation is
+    /// blocked. Programmatic setters ([`Self::set_value`], [`Self::insert`], [`Self::replace`])
+    /// still work, so this is the right mode for response/output viewers.
+    ///
+    /// See also: [`Self::set_read_only`], [`Self::is_read_only`].
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    /// Toggle read-only mode after construction. See [`Self::read_only`].
+    pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
+        self.read_only = read_only;
+        cx.notify();
+    }
+
+    /// Whether the input is in read-only mode. See [`Self::read_only`].
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     /// Set with password masked state.
@@ -1550,7 +1589,7 @@ impl InputState {
                 self.handle_hover_definition(offset, window, cx);
             }
 
-            let is_enable = !self.disabled;
+            let is_enable = !self.disabled && !self.read_only;
             let has_goto_definition = is_enable && self.lsp.definition_provider.is_some();
             let has_code_action = is_enable && !self.lsp.code_action_providers.is_empty();
             let is_selected = !self.selected_range.is_empty();
@@ -2614,7 +2653,7 @@ impl EntityInputHandler for InputState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.disabled {
+        if self.disabled || self.read_only {
             return;
         }
 
@@ -2706,7 +2745,7 @@ impl EntityInputHandler for InputState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.disabled {
+        if self.disabled || self.read_only {
             return;
         }
 
@@ -2979,6 +3018,83 @@ mod tests {
             assert_eq!(s.value(), "(foo)");
             assert_eq!(Range::from(s.selected_range), 1..4);
         });
+    }
+
+    #[gpui::test]
+    fn test_read_only_blocks_user_edits_but_not_setters(cx: &mut TestAppContext) {
+        let view = InputView::new(cx);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        let input = view.input.clone();
+
+        macro_rules! type_text {
+            ($t:expr) => {
+                cx.update(|window, cx| {
+                    input.update(cx, |s, cx| {
+                        s.focus(window, cx);
+                        s.replace_text_in_range(None, $t, window, cx);
+                    })
+                });
+            };
+        }
+
+        // Seed content programmatically, then flip to read-only.
+        cx.update(|window, cx| {
+            input.update(cx, |s, cx| {
+                s.set_value("hello", window, cx);
+                s.set_read_only(true, cx);
+                s.selected_range = (s.value().len()..s.value().len()).into();
+            })
+        });
+
+        // Typing is a no-op while read-only.
+        type_text!(" world");
+        cx.update(|_, cx| assert_eq!(input.read(cx).value(), "hello"));
+
+        // Backspace / delete are no-ops too.
+        cx.update(|window, cx| {
+            input.update(cx, |s, cx| {
+                s.backspace(&Backspace, window, cx);
+                s.delete(&Delete, window, cx);
+            })
+        });
+        cx.update(|_, cx| assert_eq!(input.read(cx).value(), "hello"));
+
+        // Paste is blocked even with clipboard content.
+        cx.update(|window, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string("X".into()));
+            input.update(cx, |s, cx| s.paste(&Paste, window, cx));
+        });
+        cx.update(|_, cx| assert_eq!(input.read(cx).value(), "hello"));
+
+        // Programmatic setters still work, and read-only survives the call.
+        cx.update(|window, cx| input.update(cx, |s, cx| s.set_value("replaced", window, cx)));
+        cx.update(|_, cx| {
+            let s = input.read(cx);
+            assert_eq!(s.value(), "replaced");
+            assert!(s.is_read_only());
+        });
+
+        // Selection / copy still function: select-all then copy populates the clipboard.
+        cx.update(|window, cx| {
+            input.update(cx, |s, cx| {
+                s.select_all(&SelectAll, window, cx);
+                s.copy(&Copy, window, cx);
+            })
+        });
+        cx.update(|_, cx| {
+            let clip = cx.read_from_clipboard().and_then(|c| c.text());
+            assert_eq!(clip.as_deref(), Some("replaced"));
+        });
+
+        // Clearing read-only re-enables typing.
+        cx.update(|_, cx| input.update(cx, |s, cx| s.set_read_only(false, cx)));
+        cx.update(|window, cx| {
+            input.update(cx, |s, cx| {
+                s.select_all(&SelectAll, window, cx);
+                s.replace_text_in_range(None, "edited", window, cx);
+            })
+        });
+        cx.update(|_, cx| assert_eq!(input.read(cx).value(), "edited"));
     }
 
     #[gpui::test]
