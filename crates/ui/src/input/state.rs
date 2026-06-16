@@ -114,6 +114,7 @@ actions!(
         ToggleCodeActions,
         Search,
         GoToDefinition,
+        ShowCompletion,
     ]
 );
 
@@ -172,6 +173,7 @@ pub(crate) fn init(cx: &mut App) {
             Some(CONTEXT),
         ),
         KeyBinding::new("escape", Escape, Some(CONTEXT)),
+        KeyBinding::new("ctrl-space", ShowCompletion, Some(CONTEXT)),
         KeyBinding::new("up", MoveUp, Some(CONTEXT)),
         KeyBinding::new("down", MoveDown, Some(CONTEXT)),
         KeyBinding::new("left", MoveLeft, Some(CONTEXT)),
@@ -1498,6 +1500,28 @@ impl InputState {
         }
 
         cx.propagate();
+    }
+
+    /// Manually trigger the completion menu at the current cursor position.
+    ///
+    /// This is the standard "invoke completion" gesture (bound to `ctrl-space`). It works
+    /// regardless of what was just typed: the configured [`CompletionProvider`] is asked for
+    /// completions at the cursor, so a provider that inspects the surrounding text can offer
+    /// context-aware suggestions even when no trigger character was typed.
+    pub fn show_completions(
+        &mut self,
+        _: &ShowCompletion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.lsp.completion_provider.is_none() {
+            return;
+        }
+
+        // Drop any existing menu so the trigger offset re-anchors at the cursor.
+        self.context_menu_content = None;
+        let cursor = self.cursor();
+        self.handle_completion_trigger(&(cursor..cursor), "", window, cx);
     }
 
     /// Show the right-click context menu as a native OS menu.

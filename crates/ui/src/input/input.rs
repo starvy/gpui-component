@@ -331,6 +331,7 @@ impl RenderOnce for Input {
 
                 result
             })
+            .on_action(window.listener_for(&self.state, InputState::show_completions))
             .on_action(window.listener_for(&self.state, InputState::select_all))
             .on_action(window.listener_for(&self.state, InputState::select_to_start_of_line))
             .on_action(window.listener_for(&self.state, InputState::select_to_end_of_line))
