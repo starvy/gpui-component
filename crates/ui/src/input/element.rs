@@ -29,6 +29,92 @@ pub(super) const LINE_NUMBER_RIGHT_MARGIN: Pixels = px(10.);
 const FOLD_ICON_WIDTH: Pixels = px(14.);
 const FOLD_ICON_HITBOX_WIDTH: Pixels = px(18.);
 const MAX_HIGHLIGHT_LINE_LENGTH: usize = 10_000;
+/// Char budget for the matching-bracket scan, so a huge unbalanced file can't stall a frame.
+const MAX_BRACKET_SCAN: usize = 50_000;
+
+/// The closer for a bracket opener (only the nestable pairs; quotes are intentionally excluded).
+fn bracket_close(open: char) -> Option<char> {
+    match open {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        _ => None,
+    }
+}
+
+/// The opener for a bracket closer.
+fn bracket_open(close: char) -> Option<char> {
+    match close {
+        ')' => Some('('),
+        ']' => Some('['),
+        '}' => Some('{'),
+        _ => None,
+    }
+}
+
+/// Find the byte ranges of the bracket adjacent to `cursor` and its matching partner.
+///
+/// Mirrors typical editor behavior: the char *before* the cursor is preferred when both sides are
+/// brackets. Scans forward from an opener / backward from a closer with a depth counter, bounded by
+/// [`MAX_BRACKET_SCAN`]. Returns `None` when the cursor isn't next to a bracket or the pair is
+/// unbalanced within the budget. Each returned range is a single char.
+fn matching_bracket_ranges(text: &Rope, cursor: usize) -> Option<(Range<usize>, Range<usize>)> {
+    let before = cursor.checked_sub(1).and_then(|i| {
+        let c = text.char_at(i)?;
+        (bracket_open(c).is_some() || bracket_close(c).is_some()).then_some((i, c))
+    });
+    let after = text.char_at(cursor).and_then(|c| {
+        (bracket_open(c).is_some() || bracket_close(c).is_some()).then_some((cursor, c))
+    });
+
+    // Prefer the bracket just before the cursor (matches Zed/VS Code).
+    let (offset, ch) = before.or(after)?;
+
+    if let Some(close) = bracket_close(ch) {
+        let partner = scan_forward(text, offset + ch.len_utf8(), ch, close)?;
+        Some((offset..offset + ch.len_utf8(), partner..partner + close.len_utf8()))
+    } else {
+        let open = bracket_open(ch)?;
+        let partner = scan_backward(text, offset, ch, open)?;
+        Some((offset..offset + ch.len_utf8(), partner..partner + open.len_utf8()))
+    }
+}
+
+/// Scan forward from `start` for the closer matching an opener, tracking nesting depth.
+fn scan_forward(text: &Rope, start: usize, open: char, close: char) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut offset = start;
+    for c in text.chars_at(start).take(MAX_BRACKET_SCAN) {
+        if c == open {
+            depth += 1;
+        } else if c == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(offset);
+            }
+        }
+        offset += c.len_utf8();
+    }
+    None
+}
+
+/// Scan backward from `start` for the opener matching a closer, tracking nesting depth.
+fn scan_backward(text: &Rope, start: usize, close: char, open: char) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut offset = start;
+    for c in text.chars_at(start).reversed().take(MAX_BRACKET_SCAN) {
+        offset -= c.len_utf8();
+        if c == close {
+            depth += 1;
+        } else if c == open {
+            depth -= 1;
+            if depth == 0 {
+                return Some(offset);
+            }
+        }
+    }
+    None
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct EditorScrollbarLayout {
@@ -733,6 +819,28 @@ impl TextElement {
         paths
     }
 
+    /// Layout the bracket under the cursor and its matching partner (code editors only).
+    fn layout_matching_brackets(
+        &self,
+        last_layout: &LastLayout,
+        bounds: &Bounds<Pixels>,
+        cx: &mut App,
+    ) -> Vec<Path<Pixels>> {
+        let state = self.state.read(cx);
+        if !state.mode.is_code_editor() {
+            return vec![];
+        }
+
+        let Some((a, b)) = matching_bracket_ranges(&state.text, state.cursor()) else {
+            return vec![];
+        };
+
+        [a, b]
+            .into_iter()
+            .filter_map(|range| Self::layout_match_range(range, last_layout, bounds))
+            .collect()
+    }
+
     fn layout_hover_highlight(
         &self,
         last_layout: &LastLayout,
@@ -1430,6 +1538,7 @@ pub(super) struct PrepaintState {
     selection_path: Option<Path<Pixels>>,
     hover_highlight_path: Option<Path<Pixels>>,
     search_match_paths: Vec<(Path<Pixels>, bool)>,
+    bracket_match_paths: Vec<Path<Pixels>>,
     document_color_paths: Vec<(Path<Pixels>, Hsla)>,
     hover_definition_hitbox: Option<Hitbox>,
     indent_guides_path: Option<Path<Pixels>>,
@@ -1832,6 +1941,7 @@ impl Element for TextElement {
         last_layout.cursor_bounds = cursor_bounds;
 
         let search_match_paths = self.layout_search_matches(&last_layout, &mut bounds, cx);
+        let bracket_match_paths = self.layout_matching_brackets(&last_layout, &bounds, cx);
         let selection_path = self.layout_selections(&last_layout, &mut bounds, window, cx);
         let hover_highlight_path = self.layout_hover_highlight(&last_layout, &mut bounds, cx);
         let document_color_paths =
@@ -1913,6 +2023,7 @@ impl Element for TextElement {
             current_row,
             selection_path,
             search_match_paths,
+            bracket_match_paths,
             hover_highlight_path,
             hover_definition_hitbox,
             document_color_paths,
@@ -2018,6 +2129,13 @@ impl Element for TextElement {
                 if *is_active {
                     window.paint_path(path.clone(), cx.theme().selection);
                 }
+            }
+
+            // Matching brackets: a visible tint behind the cursor's bracket and its partner
+            // (primary reads clearly on the dark editor bg, unlike the muted accent).
+            let bracket_match = cx.theme().primary.opacity(0.4);
+            for path in prepaint.bracket_match_paths.iter() {
+                window.paint_path(path.clone(), bracket_match);
             }
 
             if let Some(path) = prepaint.selection_path.take() {
@@ -2357,6 +2475,28 @@ fn split_runs_by_bg_segments(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_matching_bracket_ranges() {
+        let rope = Rope::from("foo(bar[1]){}");
+        // Cursor just after the opening '(' prefers the bracket before it.
+        assert_eq!(matching_bracket_ranges(&rope, 4), Some((3..4, 10..11)));
+        // Cursor before '(' looks at the char after.
+        assert_eq!(matching_bracket_ranges(&rope, 3), Some((3..4, 10..11)));
+        // Closer scans backward.
+        assert_eq!(matching_bracket_ranges(&rope, 11), Some((10..11, 3..4)));
+        // Nesting: '[' matches its own ']', not the outer ')'.
+        assert_eq!(matching_bracket_ranges(&rope, 7), Some((7..8, 9..10)));
+        // Empty pair.
+        assert_eq!(matching_bracket_ranges(&rope, 12), Some((11..12, 12..13)));
+        // Not adjacent to a bracket.
+        assert_eq!(matching_bracket_ranges(&rope, 1), None);
+        // Unbalanced.
+        let open = Rope::from("foo(bar");
+        assert_eq!(matching_bracket_ranges(&open, 4), None);
+        let close = Rope::from("bar)baz");
+        assert_eq!(matching_bracket_ranges(&close, 4), None);
+    }
 
     #[test]
     fn test_editor_scrollbar_layout_uses_current_scroll_size() {
