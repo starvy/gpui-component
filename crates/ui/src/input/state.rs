@@ -3018,6 +3018,16 @@ mod tests {
             assert_eq!(s.value(), "(foo)");
             assert_eq!(Range::from(s.selected_range), 1..4);
         });
+
+        // Balance-aware: an opener doesn't add a closer when an unmatched one is already ahead.
+        cx.update(|window, cx| {
+            input.update(cx, |s, cx| {
+                s.set_value("a}", window, cx);
+                s.selected_range = (0..0).into();
+            })
+        });
+        type_text!("{");
+        assert_state!("{a}", 1);
     }
 
     #[gpui::test]

@@ -10,6 +10,9 @@ use gpui::{Context, Window};
 
 use crate::input::InputState;
 
+/// Char budget for the balance scan, so a huge buffer can't stall a keystroke.
+const BALANCE_SCAN: usize = 50_000;
+
 /// An auto-closing pair. `open == close` marks a symmetric pair (a quote), which gets extra guards.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct BracketPair {
@@ -75,7 +78,12 @@ impl InputState {
             };
             let selected = self.text.slice(range.clone()).to_string();
             let wrapped = format!("{}{}{}", p.open, selected, p.close);
-            self.replace_text_in_range_silent(Some(self.range_to_utf16(&range)), &wrapped, window, cx);
+            self.replace_text_in_range_silent(
+                Some(self.range_to_utf16(&range)),
+                &wrapped,
+                window,
+                cx,
+            );
             let inner_start = range.start + 1;
             let inner_end = inner_start + selected.chars().count();
             self.selected_range = (inner_start..inner_end).into();
@@ -102,20 +110,59 @@ impl InputState {
             if is_word(prev) || is_word(next) {
                 return false; // apostrophe / closing an existing quote — insert a single char
             }
+            if !self.should_auto_close(at, *p) {
+                return false; // a dangling quote is already ahead
+            }
             self.insert_pair(at, *p, window, cx);
             return true;
         }
 
-        // Bracket opener: insert the pair, cursor between.
+        // Bracket opener: auto-close only if it won't duplicate a closer already ahead.
         if let Some(p) = pairs.iter().find(|p| p.open == ch && p.open != p.close) {
-            self.insert_pair(at, *p, window, cx);
-            return true;
+            if self.should_auto_close(at, *p) {
+                self.insert_pair(at, *p, window, cx);
+                return true;
+            }
+            return false;
         }
 
         false
     }
 
-    fn insert_pair(&mut self, at: usize, p: BracketPair, window: &mut Window, cx: &mut Context<Self>) {
+    /// Whether typing `p.open` at `at` should also insert `p.close`. Skips when an unmatched closer
+    /// is already ahead (the user is balancing) so we don't add a duplicate — for brackets via a
+    /// depth scan, for quotes via parity.
+    fn should_auto_close(&self, at: usize, p: BracketPair) -> bool {
+        if p.open == p.close {
+            let ahead = self
+                .text
+                .chars_at(at)
+                .take(BALANCE_SCAN)
+                .filter(|&c| c == p.close)
+                .count();
+            return ahead % 2 == 0;
+        }
+        let mut depth = 0i32;
+        for c in self.text.chars_at(at).take(BALANCE_SCAN) {
+            if c == p.open {
+                depth += 1;
+            } else if c == p.close {
+                if depth == 0 {
+                    return false;
+                }
+                depth -= 1;
+            }
+        }
+        true
+    }
+
+    fn insert_pair(
+        &mut self,
+        at: usize,
+        p: BracketPair,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let text = format!("{}{}", p.open, p.close);
         self.replace_text_in_range_silent(Some(self.range_to_utf16(&(at..at))), &text, window, cx);
         self.move_cursor_to(at + 1, cx);
