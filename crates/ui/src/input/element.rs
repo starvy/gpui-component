@@ -858,6 +858,97 @@ impl TextElement {
         Self::layout_match_range(symbol_range, last_layout, bounds)
     }
 
+    /// Highlight occurrences of the selection (visible), or of the word under the caret when there
+    /// is no selection (subtle). Code editors only; scans the visible range so big buffers stay cheap.
+    fn layout_word_highlights(
+        &self,
+        last_layout: &LastLayout,
+        bounds: &Bounds<Pixels>,
+        cx: &mut App,
+    ) -> Vec<(Path<Pixels>, Hsla)> {
+        const MAX_NEEDLE: usize = 200;
+
+        let state = self.state.read(cx);
+        if !state.mode.is_code_editor() {
+            return vec![];
+        }
+
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+
+        let sel = Range::<usize>::from(state.selected_range);
+        let (lo, hi) = (sel.start.min(sel.end), sel.start.max(sel.end));
+
+        // (needle, whole-word-only, tint, minimum occurrences to bother painting)
+        let (needle, whole_word, color, min_count) = if lo != hi {
+            let text = state.text.slice(lo..hi).to_string();
+            if text.len() > MAX_NEEDLE || text.contains('\n') || text.trim().is_empty() {
+                return vec![];
+            }
+            (text, false, cx.theme().selection.opacity(0.5), 2)
+        } else {
+            let cursor = state.cursor();
+            let mut start = cursor;
+            while let Some(c) = state.char_before_offset(start) {
+                if is_word(c) {
+                    start -= c.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            let mut end = cursor;
+            while let Some(c) = state.char_after_offset(end) {
+                if is_word(c) {
+                    end += c.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            if start == end {
+                return vec![];
+            }
+            (
+                state.text.slice(start..end).to_string(),
+                true,
+                cx.theme().selection.opacity(0.35),
+                1,
+            )
+        };
+
+        let vstart = last_layout.visible_range_offset.start.min(state.text.len());
+        let vend = last_layout.visible_range_offset.end.min(state.text.len());
+        if vstart >= vend {
+            return vec![];
+        }
+        let haystack = state.text.slice(vstart..vend).to_string();
+
+        let mut ranges: Vec<Range<usize>> = Vec::new();
+        let mut from = 0;
+        while let Some(pos) = haystack[from..].find(&needle) {
+            let s = from + pos;
+            let e = s + needle.len();
+            let boundary_ok = !whole_word || {
+                let before = haystack[..s].chars().next_back().map_or(true, |c| !is_word(c));
+                let after = haystack[e..].chars().next().map_or(true, |c| !is_word(c));
+                before && after
+            };
+            if boundary_ok {
+                ranges.push((vstart + s)..(vstart + e));
+            }
+            from = e.max(from + 1);
+        }
+
+        if ranges.len() < min_count {
+            return vec![];
+        }
+
+        ranges
+            .into_iter()
+            .filter_map(|range| {
+                Self::layout_match_range(range, last_layout, bounds).map(|path| (path, color))
+            })
+            .collect()
+    }
+
     fn layout_document_colors(
         &self,
         document_colors: &[(Range<usize>, Hsla)],
@@ -1539,6 +1630,7 @@ pub(super) struct PrepaintState {
     hover_highlight_path: Option<Path<Pixels>>,
     search_match_paths: Vec<(Path<Pixels>, bool)>,
     bracket_match_paths: Vec<Path<Pixels>>,
+    word_highlight_paths: Vec<(Path<Pixels>, Hsla)>,
     document_color_paths: Vec<(Path<Pixels>, Hsla)>,
     hover_definition_hitbox: Option<Hitbox>,
     indent_guides_path: Option<Path<Pixels>>,
@@ -1942,6 +2034,7 @@ impl Element for TextElement {
 
         let search_match_paths = self.layout_search_matches(&last_layout, &mut bounds, cx);
         let bracket_match_paths = self.layout_matching_brackets(&last_layout, &bounds, cx);
+        let word_highlight_paths = self.layout_word_highlights(&last_layout, &bounds, cx);
         let selection_path = self.layout_selections(&last_layout, &mut bounds, window, cx);
         let hover_highlight_path = self.layout_hover_highlight(&last_layout, &mut bounds, cx);
         let document_color_paths =
@@ -2024,6 +2117,7 @@ impl Element for TextElement {
             selection_path,
             search_match_paths,
             bracket_match_paths,
+            word_highlight_paths,
             hover_highlight_path,
             hover_definition_hitbox,
             document_color_paths,
@@ -2123,6 +2217,12 @@ impl Element for TextElement {
         // Paint selections
         if window.is_window_active() {
             let secondary_selection = cx.theme().selection.saturation(0.1);
+
+            // Other occurrences of the selection / caret word — tint under everything else.
+            for (path, color) in prepaint.word_highlight_paths.iter() {
+                window.paint_path(path.clone(), *color);
+            }
+
             for (path, is_active) in prepaint.search_match_paths.iter() {
                 window.paint_path(path.clone(), secondary_selection);
 
