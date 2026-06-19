@@ -306,7 +306,6 @@ impl Render for Notification {
             None => self.icon.clone(),
             Some(type_) => Some(type_.icon(cx)),
         };
-        let has_icon = icon.is_some();
         let placement = cx.theme().notification.placement;
 
         h_flex()
@@ -325,13 +324,14 @@ impl Render for Notification {
             .gap_3()
             .refine_style(&self.style)
             .when_some(icon, |this, icon| {
-                this.child(div().absolute().top(px(18.)).left_4().child(icon))
+                // A real flex child so h_flex centers it on the text, instead of a hardcoded
+                // absolute offset that sat low on message-only toasts.
+                this.child(div().flex_shrink_0().child(icon))
             })
             .child(
                 v_flex()
                     .flex_1()
                     .overflow_hidden()
-                    .when(has_icon, |this| this.pl_6())
                     .when_some(self.title.clone(), |this, title| {
                         this.child(div().text_sm().font_semibold().child(title))
                     })
