@@ -107,8 +107,10 @@ impl InputState {
                 self.move_cursor_to(at + 1, cx);
                 return true;
             }
-            if is_word(prev) || is_word(next) {
-                return false; // apostrophe / closing an existing quote — insert a single char
+            if is_word(prev) || is_word(next) || prev == Some(ch) {
+                // Apostrophe, closing an existing quote, or sitting right after one (`"a"|`) —
+                // insert a single char so we never balloon into a run of three quotes.
+                return false;
             }
             if !self.should_auto_close(at, *p) {
                 return false; // a dangling quote is already ahead

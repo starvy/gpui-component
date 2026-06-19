@@ -3005,6 +3005,20 @@ mod tests {
         type_text!("\"");
         assert_state!("\"\"", 1);
 
+        // Typing the closer quote over the auto-inserted one steps past it (no duplicate).
+        type_text!("\"");
+        assert_state!("\"\"", 2);
+
+        // Typing a quote right after a closed string inserts a single one — never a run of three.
+        cx.update(|window, cx| {
+            input.update(cx, |s, cx| {
+                s.set_value("\"a\"", window, cx);
+                s.selected_range = (3..3).into();
+            })
+        });
+        type_text!("\"");
+        assert_state!("\"a\"\"", 4);
+
         // Typing an opener over a selection wraps it, keeping the inner text selected.
         cx.update(|window, cx| {
             input.update(cx, |s, cx| {
