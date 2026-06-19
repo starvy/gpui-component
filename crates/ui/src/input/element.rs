@@ -1632,6 +1632,7 @@ pub(super) struct PrepaintState {
     bracket_match_paths: Vec<Path<Pixels>>,
     word_highlight_paths: Vec<(Path<Pixels>, Hsla)>,
     document_color_paths: Vec<(Path<Pixels>, Hsla)>,
+    highlight_range_paths: Vec<(Path<Pixels>, Hsla)>,
     hover_definition_hitbox: Option<Hitbox>,
     indent_guides_path: Option<Path<Pixels>>,
     bounds: Bounds<Pixels>,
@@ -2039,6 +2040,10 @@ impl Element for TextElement {
         let hover_highlight_path = self.layout_hover_highlight(&last_layout, &mut bounds, cx);
         let document_color_paths =
             self.layout_document_colors(&document_colors, &last_layout, &bounds, cx);
+        let highlight_range_paths = {
+            let ranges = self.state.read(cx).highlight_ranges.clone();
+            self.layout_document_colors(&ranges, &last_layout, &bounds, cx)
+        };
 
         let state = self.state.read(cx);
         let line_numbers = if state.mode.line_number() {
@@ -2118,6 +2123,7 @@ impl Element for TextElement {
             search_match_paths,
             bracket_match_paths,
             word_highlight_paths,
+            highlight_range_paths,
             hover_highlight_path,
             hover_definition_hitbox,
             document_color_paths,
@@ -2250,6 +2256,11 @@ impl Element for TextElement {
 
         // Paint document colors
         for (path, color) in prepaint.document_color_paths.iter() {
+            window.paint_path(path.clone(), *color);
+        }
+
+        // Paint host highlight ranges (e.g. `{{variable}}` tints)
+        for (path, color) in prepaint.highlight_range_paths.iter() {
             window.paint_path(path.clone(), *color);
         }
 

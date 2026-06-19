@@ -443,6 +443,10 @@ pub struct InputState {
     pub(super) inline_completion: InlineCompletion,
 
     pub(super) auto_scroll: AutoScroll,
+
+    /// Host-provided highlight ranges (byte offsets + color), painted beneath the text in any input
+    /// mode. Independent of search/LSP overlays; used e.g. to tint `{{variables}}`.
+    pub(super) highlight_ranges: Vec<(std::ops::Range<usize>, gpui::Hsla)>,
 }
 
 impl EventEmitter<InputEvent> for InputState {}
@@ -539,7 +543,22 @@ impl InputState {
             inline_completion: InlineCompletion::default(),
             cursor_line_end_affinity: false,
             auto_scroll: AutoScroll::default(),
+            highlight_ranges: Vec::new(),
         }
+    }
+
+    /// Replace the host highlight ranges (byte offsets + color), painted beneath the text. Repaints
+    /// only when the ranges actually change, so it's safe to call from a parent's render.
+    pub fn set_highlight_ranges(
+        &mut self,
+        ranges: Vec<(std::ops::Range<usize>, gpui::Hsla)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.highlight_ranges == ranges {
+            return;
+        }
+        self.highlight_ranges = ranges;
+        cx.notify();
     }
 
     /// Set Input to use multi line mode.
