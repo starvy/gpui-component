@@ -19,7 +19,8 @@ use gpui::{
 };
 use gpui::{
     AppContext, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
-    Length, MouseButton, ParentElement, Render, Styled, Task, Window, div, prelude::FluentBuilder,
+    Length, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, Render, Styled, Task, Window,
+    div, prelude::FluentBuilder,
 };
 use rust_i18n::t;
 
@@ -82,6 +83,9 @@ pub struct ListState<D: ListDelegate> {
     reset_on_cancel: bool,
     searchable: bool,
     selectable: bool,
+    /// When set, items commit on mouse-up and highlight on hover, enabling press-drag-release
+    /// from a trigger (used by [`Select`](crate::select::Select)).
+    drag_select: bool,
     _search_task: Task<()>,
     _load_more_task: Task<()>,
     _query_input_subscription: Subscription,
@@ -108,6 +112,7 @@ where
             selected_index: None,
             selectable: true,
             searchable: false,
+            drag_select: false,
             item_to_measure_index: IndexPath::default(),
             deferred_scroll_to_index: None,
             mouse_right_clicked_index: None,
@@ -129,6 +134,12 @@ where
 
     pub fn set_searchable(&mut self, searchable: bool, cx: &mut Context<Self>) {
         self.searchable = searchable;
+        cx.notify();
+    }
+
+    /// Enable press-drag-release: items commit on mouse-up (not click) and highlight on hover.
+    pub fn set_drag_select(&mut self, drag_select: bool, cx: &mut Context<Self>) {
+        self.drag_select = drag_select;
         cx.notify();
     }
 
@@ -472,7 +483,7 @@ where
                 item.selected(selected)
                     .secondary_selected(mouse_right_clicked)
             }))
-            .when(selectable, |this| {
+            .when(selectable && !self.drag_select, |this| {
                 this.on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                     this.set_right_clicked_index(None, window, cx);
                     this.selected_index = Some(ix);
@@ -484,7 +495,27 @@ where
                         cx,
                     );
                 }))
-                .on_mouse_down(
+            })
+            // Press-drag-release: commit on mouse-up (so a press that began on the trigger and
+            // released over an item selects it) and follow the cursor with the highlight.
+            .when(selectable && self.drag_select, |this| {
+                this.on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseUpEvent, window, cx| {
+                        this.set_right_clicked_index(None, window, cx);
+                        this.selected_index = Some(ix);
+                        this.on_action_confirm(&Confirm { secondary: false }, window, cx);
+                    }),
+                )
+                .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, window, cx| {
+                    if this.selected_index != Some(ix) {
+                        this.set_selected_index(Some(ix), window, cx);
+                        cx.notify();
+                    }
+                }))
+            })
+            .when(selectable, |this| {
+                this.on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, _, window, cx| {
                         this.set_right_clicked_index(Some(ix), window, cx);
