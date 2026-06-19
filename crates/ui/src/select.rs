@@ -1,10 +1,15 @@
+use std::time::{Duration, Instant};
+
 use gpui::{
     AnyElement, App, ClickEvent, Context, DismissEvent, Edges, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, Length, MouseButton,
-    MouseDownEvent, ParentElement, Render, RenderOnce, SharedString, StyleRefinement, Styled,
-    Window, anchored, deferred, div, prelude::FluentBuilder, px, rems,
+    FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, Length,
+    MouseButton, MouseDownEvent, ParentElement, Render, RenderOnce, SharedString, StyleRefinement,
+    Styled, Window, anchored, deferred, div, prelude::FluentBuilder, px, rems,
 };
 use rust_i18n::t;
+
+/// Idle gap after which the type-ahead buffer resets, so a fresh keystroke starts a new search.
+const TYPE_AHEAD_RESET: Duration = Duration::from_millis(700);
 
 use crate::{
     ActiveTheme, Disableable, ElementExt as _, Icon, IconName, IndexPath, Sizable, Size,
@@ -104,6 +109,10 @@ where
     searchable: bool,
     icon: Option<Icon>,
     title_prefix: Option<SharedString>,
+
+    // Keyboard type-ahead: accumulated prefix and the time of the last keystroke.
+    type_ahead: String,
+    type_ahead_at: Instant,
 }
 
 /// A Select element.
@@ -246,6 +255,8 @@ where
             searchable: false,
             icon: None,
             title_prefix: None,
+            type_ahead: String::new(),
+            type_ahead_at: Instant::now(),
         }
     }
 
@@ -397,6 +408,105 @@ where
         self.set_open(false, cx);
         self.focus(window, cx);
         cx.notify();
+    }
+
+    // Type a printable char to jump to a matching item (native-select style). Non-searchable
+    // selects only — searchable ones route typing into their search box.
+    fn on_type_ahead_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.searchable || self.state.disabled {
+            return;
+        }
+
+        let ks = &event.keystroke;
+        if ks.modifiers.control || ks.modifiers.alt || ks.modifiers.platform || ks.modifiers.function
+        {
+            return;
+        }
+
+        let Some(key_char) = ks.key_char.as_ref() else {
+            return; // navigation / control keys produce no char and stay with the actions
+        };
+        let mut chars = key_char.chars();
+        let (Some(ch), None) = (chars.next(), chars.next()) else {
+            return;
+        };
+        if ch.is_control() || (ch == ' ' && self.type_ahead.is_empty()) {
+            return;
+        }
+
+        cx.stop_propagation();
+        self.type_ahead(ch, window, cx);
+    }
+
+    fn type_ahead(&mut self, ch: char, window: &mut Window, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        if now.duration_since(self.type_ahead_at) > TYPE_AHEAD_RESET {
+            self.type_ahead.clear();
+        }
+        self.type_ahead_at = now;
+        self.type_ahead.extend(ch.to_lowercase());
+
+        let titles: Vec<(IndexPath, String)> = {
+            let list = self.state.list.read(cx);
+            let delegate = &list.delegate().delegate;
+            let mut titles = Vec::new();
+            for section in 0..delegate.sections_count(cx) {
+                for row in 0..delegate.items_count(section) {
+                    let ix = IndexPath::new(row).section(section);
+                    let title = delegate
+                        .item(ix)
+                        .map(|i| i.title().to_lowercase())
+                        .unwrap_or_default();
+                    titles.push((ix, title));
+                }
+            }
+            titles
+        };
+        if titles.is_empty() {
+            return;
+        }
+
+        let buffer = self.type_ahead.clone();
+        let mut target = titles
+            .iter()
+            .find(|(_, title)| title.starts_with(&buffer))
+            .map(|(ix, _)| *ix);
+
+        // A repeated single key with no longer match cycles through items starting with it.
+        let repeated = buffer.chars().count() > 1 && {
+            let first = buffer.chars().next();
+            buffer.chars().all(|c| Some(c) == first)
+        };
+        if target.is_none() && repeated {
+            let ch = buffer.chars().next().unwrap();
+            self.type_ahead = ch.to_string();
+            let start = self
+                .selected_index(cx)
+                .and_then(|cur| titles.iter().position(|(ix, _)| ix.eq_row(cur)))
+                .map(|pos| pos + 1)
+                .unwrap_or(0);
+            let count = titles.len();
+            target = (0..count)
+                .map(|i| &titles[(start + i) % count])
+                .find(|(_, title)| title.starts_with(ch))
+                .map(|(ix, _)| *ix);
+        }
+
+        if let Some(ix) = target {
+            if !self.state.open {
+                self.set_open(true, cx);
+                self.state.list.focus_handle(cx).focus(window, cx);
+            }
+            self.state
+                .list
+                .update(cx, |list, cx| list._set_selected_index(Some(ix), window, cx));
+            cx.notify();
+        }
     }
 
     fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
@@ -763,6 +873,7 @@ where
             .on_action(window.listener_for(&self.state, SelectState::down))
             .on_action(window.listener_for(&self.state, SelectState::enter))
             .on_action(window.listener_for(&self.state, SelectState::escape))
+            .on_key_down(window.listener_for(&self.state, SelectState::on_type_ahead_key))
             .size_full()
             .child(self.state)
     }
