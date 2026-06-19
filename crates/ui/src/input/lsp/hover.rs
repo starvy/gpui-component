@@ -34,6 +34,7 @@ impl InputState {
         }
 
         let Some(provider) = self.lsp.hover_provider.clone() else {
+            self.handle_hover_text(offset, cx);
             return;
         };
 
@@ -74,5 +75,36 @@ impl InputState {
 
             Ok(())
         });
+    }
+
+    /// Synchronous fallback hover driven by [`crate::input::Lsp::hover_text`] (no `lsp_types` needed
+    /// on the host side). Builds a markdown popover anchored at the returned span.
+    fn handle_hover_text(&mut self, offset: usize, cx: &mut Context<InputState>) {
+        let Some(hook) = self.lsp.hover_text.clone() else {
+            return;
+        };
+
+        if let Some(hover_popover) = self.hover_popover.as_ref() {
+            if hover_popover.read(cx).is_same(offset) {
+                return;
+            }
+        }
+
+        match hook(&self.text, offset) {
+            Some((range, markdown)) => {
+                let hover = lsp_types::Hover {
+                    contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                        kind: lsp_types::MarkupKind::Markdown,
+                        value: markdown,
+                    }),
+                    range: None,
+                };
+                self.hover_popover = Some(HoverPopover::new(cx.entity(), range, &hover, cx));
+            }
+            None => {
+                self.hover_popover = None;
+            }
+        }
+        cx.notify();
     }
 }

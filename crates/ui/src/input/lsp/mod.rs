@@ -29,6 +29,11 @@ pub struct Lsp {
     pub code_action_providers: Vec<Rc<dyn CodeActionProvider>>,
     /// The hover provider.
     pub hover_provider: Option<Rc<dyn HoverProvider>>,
+    /// A lightweight, synchronous hover hook for hosts that don't want the full LSP/`lsp_types`
+    /// surface: given the text and a byte offset, return the span to anchor on plus markdown to
+    /// show. Used only when [`Self::hover_provider`] is `None`.
+    #[allow(clippy::type_complexity)]
+    pub hover_text: Option<Rc<dyn Fn(&Rope, usize) -> Option<(std::ops::Range<usize>, String)>>>,
     /// The definition provider.
     pub definition_provider: Option<Rc<dyn DefinitionProvider>>,
     /// The document color provider.
@@ -52,6 +57,7 @@ impl Default for Lsp {
             completion_provider: None,
             code_action_providers: vec![],
             hover_provider: None,
+            hover_text: None,
             definition_provider: None,
             document_color_provider: None,
             semantic_tokens_provider: None,
