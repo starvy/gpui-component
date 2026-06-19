@@ -1,8 +1,8 @@
 use gpui::{
     AnyElement, App, ClickEvent, Context, DismissEvent, Edges, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, Length, ParentElement,
-    Render, RenderOnce, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Window,
-    anchored, deferred, div, prelude::FluentBuilder, px, rems,
+    FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, Length, MouseButton,
+    MouseDownEvent, ParentElement, Render, RenderOnce, SharedString, StyleRefinement, Styled,
+    Window, anchored, deferred, div, prelude::FluentBuilder, px, rems,
 };
 use rust_i18n::t;
 
@@ -372,7 +372,10 @@ where
         self.state.list.focus_handle(cx).focus(window, cx);
     }
 
-    fn toggle_menu(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+    // Open on mouse-down rather than click so the menu feels instant. Only attached while closed
+    // (see the `allow_open` guard at the call site), so clicking an open trigger closes it via
+    // `on_mouse_down_out`.
+    fn on_trigger_down(&mut self, _: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
 
         self.set_open(!self.state.open, cx);
@@ -508,7 +511,7 @@ where
                     .refine_style(&self.state.style)
                     .when(outline_visible, |this| this.focused_border(cx))
                     .when(allow_open, |this| {
-                        this.on_click(cx.listener(Self::toggle_menu))
+                        this.on_mouse_down(MouseButton::Left, cx.listener(Self::on_trigger_down))
                     })
                     .child(
                         h_flex()
