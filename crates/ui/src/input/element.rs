@@ -1883,6 +1883,8 @@ impl Element for TextElement {
                 }));
 
                 runs.into_iter().filter(|run| run.len > 0).collect()
+            } else if !state.masked && !state.text_color_ranges.is_empty() {
+                split_runs_by_color(&display_text.to_string(), &run, &state.text_color_ranges)
             } else {
                 vec![run]
             }
@@ -2583,6 +2585,50 @@ fn split_runs_by_bg_segments(
     result
 }
 
+/// Split `text` into contiguous [`TextRun`]s, applying each range's color to its span and `base`'s
+/// color elsewhere. Ranges are clamped to `text.len()`; empty/out-of-range ranges are skipped and
+/// overlaps are assumed not to occur (ranges are sorted by start, later ranges starting before the
+/// running cursor are dropped). The returned runs' `len`s sum to `text.len()`.
+fn split_runs_by_color(text: &str, base: &TextRun, ranges: &[(Range<usize>, Hsla)]) -> Vec<TextRun> {
+    let mut sorted: Vec<_> = ranges
+        .iter()
+        .filter_map(|(range, color)| {
+            let start = range.start.min(text.len());
+            let end = range.end.min(text.len());
+            (start < end).then_some((start..end, *color))
+        })
+        .collect();
+    sorted.sort_by_key(|(range, _)| range.start);
+
+    let mut result = vec![];
+    let mut cursor = 0;
+    for (range, color) in sorted {
+        if range.start < cursor {
+            continue;
+        }
+        if range.start > cursor {
+            result.push(TextRun {
+                len: range.start - cursor,
+                ..base.clone()
+            });
+        }
+        result.push(TextRun {
+            len: range.end - range.start,
+            color,
+            ..base.clone()
+        });
+        cursor = range.end;
+    }
+    if cursor < text.len() {
+        result.push(TextRun {
+            len: text.len() - cursor,
+            ..base.clone()
+        });
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2796,6 +2842,56 @@ mod tests {
         assert_eq!(result[3].color, gpui::black());
         assert_eq!(result[4].color, gpui::black());
         assert_eq!(result[5].color, gpui::blue());
+    }
+
+    #[test]
+    fn test_split_runs_by_color() {
+        let base = TextRun {
+            len: 0,
+            font: gpui::font(".SystemUIFont"),
+            color: gpui::black(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+
+        // Middle range: base / colored / base.
+        let text = "hello world!";
+        let runs = split_runs_by_color(text, &base, &[(6..11, gpui::red())]);
+        assert_eq!(
+            runs.iter().map(|r| r.len).sum::<usize>(),
+            text.len()
+        );
+        assert_eq!(runs.iter().map(|r| r.len).collect::<Vec<_>>(), vec![6, 5, 1]);
+        assert_eq!(runs[0].color, gpui::black());
+        assert_eq!(runs[1].color, gpui::red());
+        assert_eq!(runs[2].color, gpui::black());
+
+        // Range at the start.
+        let runs = split_runs_by_color(text, &base, &[(0..5, gpui::blue())]);
+        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), text.len());
+        assert_eq!(runs.iter().map(|r| r.len).collect::<Vec<_>>(), vec![5, 7]);
+        assert_eq!(runs[0].color, gpui::blue());
+        assert_eq!(runs[1].color, gpui::black());
+
+        // Adjacent ranges (passed out of order to exercise sorting).
+        let runs =
+            split_runs_by_color(text, &base, &[(6..12, gpui::blue()), (0..6, gpui::red())]);
+        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), text.len());
+        assert_eq!(runs.iter().map(|r| r.len).collect::<Vec<_>>(), vec![6, 6]);
+        assert_eq!(runs[0].color, gpui::red());
+        assert_eq!(runs[1].color, gpui::blue());
+
+        // Out-of-range end is clamped to text.len().
+        let runs = split_runs_by_color(text, &base, &[(6..999, gpui::red())]);
+        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), text.len());
+        assert_eq!(runs.iter().map(|r| r.len).collect::<Vec<_>>(), vec![6, 6]);
+        assert_eq!(runs[1].color, gpui::red());
+
+        // Fully out-of-range is skipped, leaving a single base run.
+        let runs = split_runs_by_color(text, &base, &[(50..60, gpui::red())]);
+        assert_eq!(runs.iter().map(|r| r.len).collect::<Vec<_>>(), vec![text.len()]);
+        assert_eq!(runs[0].color, gpui::black());
     }
 
     #[test]

@@ -447,6 +447,10 @@ pub struct InputState {
     /// Host-provided highlight ranges (byte offsets + color), painted beneath the text in any input
     /// mode. Independent of search/LSP overlays; used e.g. to tint `{{variables}}`.
     pub(super) highlight_ranges: Vec<(std::ops::Range<usize>, gpui::Hsla)>,
+
+    /// Host-provided text-color ranges (byte offsets + color), applied to the glyph runs of a plain
+    /// (non-code-editor, non-masked) input; used e.g. to dim a URL's query string.
+    pub(super) text_color_ranges: Vec<(std::ops::Range<usize>, gpui::Hsla)>,
 }
 
 impl EventEmitter<InputEvent> for InputState {}
@@ -544,6 +548,7 @@ impl InputState {
             cursor_line_end_affinity: false,
             auto_scroll: AutoScroll::default(),
             highlight_ranges: Vec::new(),
+            text_color_ranges: Vec::new(),
         }
     }
 
@@ -558,6 +563,21 @@ impl InputState {
             return;
         }
         self.highlight_ranges = ranges;
+        cx.notify();
+    }
+
+    /// Replace the host text-color ranges (byte offsets + color), applied to the glyph runs of a
+    /// plain input. Repaints only when the ranges actually change, so it's safe to call from a
+    /// parent's render.
+    pub fn set_text_colors(
+        &mut self,
+        ranges: Vec<(std::ops::Range<usize>, gpui::Hsla)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.text_color_ranges == ranges {
+            return;
+        }
+        self.text_color_ranges = ranges;
         cx.notify();
     }
 
