@@ -290,6 +290,17 @@ impl InputState {
         self
     }
 
+    /// Change the indentation ([`TabSize`]: width + spaces-vs-tabs) after construction so a settings
+    /// change applies live. No-op for modes without indentation. See [`Self::tab_size`].
+    pub fn set_tab_size(&mut self, tab: TabSize, cx: &mut Context<Self>) {
+        match &mut self.mode {
+            InputMode::PlainText { tab: t, .. } => *t = tab,
+            InputMode::CodeEditor { tab: t, .. } => *t = tab,
+            _ => {}
+        }
+        cx.notify();
+    }
+
     pub(super) fn indent_inline(
         &mut self,
         _: &IndentInline,

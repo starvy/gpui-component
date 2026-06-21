@@ -284,7 +284,13 @@ impl RenderOnce for Input {
         div()
             .id(("input", self.state.entity_id()))
             .flex()
-            .key_context(crate::input::CONTEXT)
+            // The `default_undo` identifier gates the built-in undo/redo bindings; omit it so an
+            // input with `.with_default_undo(false)` lets those keys reach a host's global undo.
+            .key_context(if state.with_default_undo {
+                "Input default_undo"
+            } else {
+                crate::input::CONTEXT
+            })
             .track_focus(&state.focus_handle.clone())
             .tab_index(self.tab_index)
             .when(!state.disabled, |this| {

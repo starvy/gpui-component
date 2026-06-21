@@ -240,10 +240,12 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("ctrl-e", MoveEnd, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-right", MoveEnd, Some(CONTEXT)),
+        // Gated on `default_undo` so an input built with `.with_default_undo(false)` lets these
+        // keys fall through to a host's global undo (see `InputState::with_default_undo`).
         #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-z", Undo, Some(CONTEXT)),
+        KeyBinding::new("cmd-z", Undo, Some("Input && default_undo")),
         #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-shift-z", Redo, Some(CONTEXT)),
+        KeyBinding::new("cmd-shift-z", Redo, Some("Input && default_undo")),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-up", MoveToStart, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
@@ -261,9 +263,9 @@ pub(crate) fn init(cx: &mut App) {
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-shift-down", SelectToEnd, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-z", Undo, Some(CONTEXT)),
+        KeyBinding::new("ctrl-z", Undo, Some("Input && default_undo")),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-y", Redo, Some(CONTEXT)),
+        KeyBinding::new("ctrl-y", Redo, Some("Input && default_undo")),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-.", ToggleCodeActions, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
@@ -373,6 +375,11 @@ pub struct InputState {
     /// stays focusable, selectable, copyable, scrollable, and searchable. Programmatic setters
     /// ([`Self::set_value`], [`Self::insert`], [`Self::replace`]) bypass it. Intended for viewers.
     pub(super) read_only: bool,
+    /// When false, the built-in undo/redo key bindings (cmd-z/cmd-shift-z on macOS, ctrl-z/ctrl-y
+    /// elsewhere) are suppressed for this input so a host app can route those keys to its own
+    /// global undo. The bindings are gated by the `default_undo` key context, set by the element
+    /// only when this is true (see [`Self::with_default_undo`]).
+    pub(super) with_default_undo: bool,
     pub(super) masked: bool,
     pub(super) clean_on_escape: bool,
     pub(super) submit_on_enter: bool,
@@ -501,6 +508,7 @@ impl InputState {
             selecting: false,
             disabled: false,
             read_only: false,
+            with_default_undo: true,
             masked: false,
             clean_on_escape: false,
             submit_on_enter: false,
@@ -929,6 +937,24 @@ impl InputState {
     /// Whether the input is in read-only mode. See [`Self::read_only`].
     pub fn is_read_only(&self) -> bool {
         self.read_only
+    }
+
+    /// Keep (default) or suppress the built-in undo/redo key bindings.
+    ///
+    /// When `false`, cmd-z/cmd-shift-z (macOS) and ctrl-z/ctrl-y (other platforms) are not bound on
+    /// this input, so a host application can route them to its own undo system. The widget's
+    /// internal undo history still tracks edits; only the key bindings are withheld.
+    ///
+    /// See also: [`Self::set_default_undo`].
+    pub fn with_default_undo(mut self, enabled: bool) -> Self {
+        self.with_default_undo = enabled;
+        self
+    }
+
+    /// Toggle the built-in undo/redo key bindings after construction. See [`Self::with_default_undo`].
+    pub fn set_default_undo(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.with_default_undo = enabled;
+        cx.notify();
     }
 
     /// Set with password masked state.
@@ -2188,6 +2214,23 @@ impl InputState {
     pub fn unselect(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let offset = self.cursor();
         self.selected_range = (offset..offset).into();
+        cx.notify()
+    }
+
+    /// Set the selection to a byte range (UTF-8 offsets), clamped to the text bounds. The cursor
+    /// sits at the range end; an empty range just places the cursor. Pass `0..usize::MAX` to select
+    /// all. Programmatic counterpart to the user's click/drag selection.
+    pub fn set_selection(
+        &mut self,
+        range: std::ops::Range<usize>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let len = self.text.len();
+        let start = range.start.min(len);
+        let end = range.end.min(len);
+        self.selection_reversed = false;
+        self.selected_range = (start..end).into();
         cx.notify()
     }
 
