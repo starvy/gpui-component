@@ -3127,6 +3127,48 @@ mod tests {
     }
 
     #[gpui::test]
+    fn test_xml_auto_indent(cx: &mut TestAppContext) {
+        let view = InputView::new(cx);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        let input = view.input.clone();
+
+        cx.update(|window, cx| {
+            input.update(cx, |s, cx| {
+                s.focus(window, cx);
+                s.set_highlighter("xml", cx);
+            })
+        });
+
+        let enter_with = |cx: &mut VisualTestContext, value: &str, at: usize| {
+            cx.update(|window, cx| {
+                input.update(cx, |s, cx| {
+                    s.set_value(value, window, cx);
+                    s.selected_range = (at..at).into();
+                    s.insert_newline_with_indent(window, cx);
+                })
+            });
+        };
+        let value = |cx: &mut VisualTestContext| cx.update(|_, cx| input.read(cx).value().to_string());
+
+        // Between an opening tag and its closer: split, closer drops to its own line, cursor indented.
+        enter_with(&mut cx, "<a></a>", 3);
+        assert_eq!(value(&mut cx), "<a>\n  \n</a>");
+        cx.update(|_, cx| assert_eq!(input.read(cx).cursor(), 6));
+
+        // After an opening tag: deepen one level.
+        enter_with(&mut cx, "<a>", 3);
+        assert_eq!(value(&mut cx), "<a>\n  ");
+
+        // A self-closing tag does not deepen.
+        enter_with(&mut cx, "<a/>", 4);
+        assert_eq!(value(&mut cx), "<a/>\n");
+
+        // A closing tag does not deepen.
+        enter_with(&mut cx, "</a>", 4);
+        assert_eq!(value(&mut cx), "</a>\n");
+    }
+
+    #[gpui::test]
     fn test_read_only_blocks_user_edits_but_not_setters(cx: &mut TestAppContext) {
         let view = InputView::new(cx);
         let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);

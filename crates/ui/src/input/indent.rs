@@ -76,20 +76,54 @@ impl InputState {
             (Some('{'), Some('}')) | (Some('['), Some(']')) | (Some('('), Some(')'))
         );
 
-        if is_pair {
+        // XML/HTML: a `>` that closes an opening tag acts like an opener, and `<a>|</a>` (cursor
+        // between an opening tag and its closer) acts like an empty pair — so Enter deepens, and
+        // between the tags it splits the closer onto its own line. Gated to markup so generics
+        // (`Vec<T>`) and comparisons in other languages are untouched.
+        let markup = matches!(self.mode.language(), Some("xml") | Some("html"));
+        let tag_open = markup && before == Some('>') && self.tag_before_is_opening(cursor);
+        let tag_pair = tag_open && after == Some('<') && self.closing_tag_starts_at(cursor);
+
+        if is_pair || tag_pair {
             let deeper = format!("{base}{unit}");
             let text = format!("\n{deeper}\n{base}");
             self.replace_text_in_range_silent(None, &text, window, cx);
             // Drop the cursor onto the indented middle line.
             let mid = cursor + 1 + deeper.chars().count();
             self.selected_range = (mid..mid).into();
-        } else if is_open {
+        } else if is_open || tag_open {
             let deeper = format!("{base}{unit}");
             self.replace_text_in_range_silent(None, &format!("\n{deeper}"), window, cx);
         } else {
             let indent = self.indent_of_next_line();
             self.replace_text_in_range_silent(None, &format!("\n{indent}"), window, cx);
         }
+    }
+
+    /// True when the `>` immediately before `cursor` closes an *opening* tag — not a closing `</…>`
+    /// or a self-closing `<…/>`. Bounded backward scan to the tag's `<` (char-indexed, so it's safe
+    /// across multibyte text).
+    fn tag_before_is_opening(&self, cursor: usize) -> bool {
+        let start = cursor.saturating_sub(512);
+        let prefix: String = self.text.slice(start..cursor).chars().collect();
+        let Some(inner) = prefix.strip_suffix('>') else {
+            return false;
+        };
+        if inner.ends_with('/') {
+            return false; // self-closing
+        }
+        match inner.rfind('<') {
+            // The nearest `<` opens this tag: an opening tag unless it's `</`, and the span up to our
+            // `>` must hold no other `>` (else it isn't a single well-formed tag).
+            Some(i) => !inner[i..].starts_with("</") && !inner[i + 1..].contains('>'),
+            None => false,
+        }
+    }
+
+    /// True when a closing tag (`</`) begins exactly at `cursor`.
+    fn closing_tag_starts_at(&self, cursor: usize) -> bool {
+        let mut it = self.text.slice(cursor..).chars();
+        it.next() == Some('<') && it.next() == Some('/')
     }
 
     /// The leading whitespace of the line containing the cursor.
