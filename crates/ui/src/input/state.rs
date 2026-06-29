@@ -3124,6 +3124,26 @@ mod tests {
         });
         type_text!("{");
         assert_state!("{a}", 1);
+
+        // Nested: typing an opener inside an empty pair still auto-closes (the closer ahead is
+        // already balanced by the opener behind the cursor).
+        cx.update(|window, cx| {
+            input.update(cx, |s, cx| {
+                s.set_value("{}", window, cx);
+                s.selected_range = (1..1).into();
+            })
+        });
+        type_text!("{");
+        assert_state!("{{}}", 2);
+
+        cx.update(|window, cx| {
+            input.update(cx, |s, cx| {
+                s.set_value("()", window, cx);
+                s.selected_range = (1..1).into();
+            })
+        });
+        type_text!("(");
+        assert_state!("(())", 2);
     }
 
     #[gpui::test]

@@ -144,7 +144,17 @@ impl InputState {
                 .count();
             return ahead % 2 == 0;
         }
+        // Seed the depth with openers still unclosed *before* the cursor, so a closer ahead that
+        // those already balance (e.g. typing `{` inside an empty `{|}`) doesn't read as dangling.
         let mut depth = 0i32;
+        for c in self.text.chars_at(at).reversed().take(BALANCE_SCAN) {
+            if c == p.open {
+                depth += 1;
+            } else if c == p.close {
+                depth -= 1;
+            }
+        }
+        depth = depth.max(0);
         for c in self.text.chars_at(at).take(BALANCE_SCAN) {
             if c == p.open {
                 depth += 1;
