@@ -1,4 +1,7 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::RefCell,
+    rc::{Rc, Weak},
+};
 
 use gpui::{
     Anchor, AnyElement, App, Context, DismissEvent, Element, ElementId, Entity, Focusable,
@@ -117,6 +120,33 @@ struct ContextMenuSharedState {
     open: bool,
     position: Point<Pixels>,
     _subscription: Option<Subscription>,
+}
+
+thread_local! {
+    /// The shared state of the most recently opened context menu (weak — the element state owns
+    /// it). Menus are per-element with no other coordination: the previous menu normally closes
+    /// itself via its `on_mouse_down_out`, but that can race the deferred open/dismiss paths and
+    /// leave a stale menu painted beneath the new one. Opening any context menu force-closes the
+    /// one registered here first, so at most one is ever visible.
+    static OPEN_CONTEXT_MENU: RefCell<Option<Weak<RefCell<ContextMenuSharedState>>>> =
+        const { RefCell::new(None) };
+}
+
+/// Close the previously opened context menu (if it isn't `opening`) and register `opening` as the
+/// active one.
+fn replace_open_context_menu(opening: &Rc<RefCell<ContextMenuSharedState>>) {
+    OPEN_CONTEXT_MENU.with(|active| {
+        let mut active = active.borrow_mut();
+        if let Some(prev) = active.take().and_then(|weak| weak.upgrade()) {
+            if !Rc::ptr_eq(&prev, opening) {
+                let mut prev = prev.borrow_mut();
+                prev.open = false;
+                prev.menu_view = None;
+                prev._subscription = None;
+            }
+        }
+        *active = Some(Rc::downgrade(opening));
+    });
 }
 
 pub struct ContextMenuState {
@@ -277,6 +307,9 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                         && event.button == MouseButton::Right
                         && hitbox.is_hovered(window)
                     {
+                        // At most one context menu at a time: force-close the previous one instead
+                        // of relying on its own outside-click dismissal.
+                        replace_open_context_menu(&shared_state);
                         {
                             let mut shared_state = shared_state.borrow_mut();
                             // Clear any existing menu view to allow immediate replacement
@@ -286,6 +319,7 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                             shared_state.position = event.position;
                             shared_state.open = true;
                         }
+                        window.refresh();
 
                         // Use defer to build the menu in the next frame, avoiding race conditions
                         window.defer(cx, {
